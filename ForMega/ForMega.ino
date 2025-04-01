@@ -4,21 +4,31 @@
 #include "GyverEncoder.h"
 #include <Wire.h>
 
+#define DEBUG  // Включить отладку
+
+#ifdef DEBUG
+#define DEBUG_PRINT(x) Serial.print(x)
+#define DEBUG_PRINTLN(x) Serial.println(x)
+#else
+#define DEBUG_PRINT(x)
+#define DEBUG_PRINTLN(x)
+#endif
+
 #define PIN_LED 13
 #define S2 18
 #define S1 19
 #define KEY 20
 #define OLEDSCL A0
 #define OLEDSDA A1
-#define MenuPointsNum 20
+#define MENU_POINTS_NUM 20
 
 String inString;
-Encoder enc(S1, S2, KEY); 
+Encoder encoder(S1, S2, KEY);
 U8G2_ST7567_ENH_DG128064I_F_SW_I2C oled(U8G2_R0, OLEDSCL, OLEDSDA, U8X8_PIN_NONE);
-simpleMenu* menu = nullptr;
+SimpleMenu* menu = nullptr;
 
-const menuStruct points [MenuPointsNum] PROGMEM = {
-    {"Главное меню", 0},     // Заголовок
+const MenuItem menu_items[MENU_POINTS_NUM] PROGMEM = {
+    {"Главное меню", 0},
     {"Включить свет", 1},
     {"Выключить свет", 2},
     {"Заряд батареи", 3},
@@ -40,59 +50,82 @@ const menuStruct points [MenuPointsNum] PROGMEM = {
     {"Выход", 19},
 };
 
-void setup() {   
+void setup() {
     Serial.begin(115200);
     Serial3.begin(115200);
     Serial.setTimeout(5);
     Serial3.setTimeout(5);
+
     pinMode(PIN_LED, OUTPUT);
     digitalWrite(PIN_LED, LOW);
-    enc.setType(TYPE2);
-    
-    Serial.println("Starting setup");
-    menu = new simpleMenu(points, oled, MenuPointsNum);
-    Serial.println("Menu created");
+    encoder.setType(TYPE2);
+
+    DEBUG_PRINTLN("Starting setup");
+    menu = new SimpleMenu(menu_items, oled, MENU_POINTS_NUM);
+    DEBUG_PRINTLN("Menu created");
     menu->DrawMenu();
-    Serial.println("Menu drawn");
+    DEBUG_PRINTLN("Menu drawn");
 }
 
 void loop() {
-    enc.tick();
-    bool right = enc.isRight();
-    bool left = enc.isLeft();
+    encoder.tick();
+    bool right = encoder.isRight();
+    bool left = encoder.isLeft();
     if (right || left) {
-        Serial.print("Detected - Right: ");
-        Serial.print(right);
-        Serial.print(", Left: ");
-        Serial.println(left);
-        menu->updateEncoder(right, left);
+        menu->UpdateEncoder(right, left);
+        int selected = menu->GetSelectedIndex();
+        if (selected == 4) {  // "Температура" выбрана
+            int temp = analogRead(A2) / 4;
+            String msg = "#0005," + String(temp) + ";";
+            Serial3.print(msg);
+            DEBUG_PRINTLN("Sent to ESP: " + msg);
+        }
     }
-}
 
-void serialEvent3() {
+    // Обработка Serial3 в loop()
     while (Serial3.available()) {
-        char str[30];
-        int amount = Serial3.readBytesUntil(';', str, 30);
-        str[amount] = NULL;
-        GParser data(str);
-        int datacount = data.split();
-        if (data[0] != NULL && datacount >= 2) {
-            switch (data.getInt(0)) {
-                case 0: Serial.println(data[1]); break;
-                case 1: Serial.print(data[1]); break;
-                case 2: Serial.println(" "); break;
-                case 3:
-                    if (data.getInt(1) == 1) {
-                        digitalWrite(PIN_LED, HIGH);
-                        Serial.println("Светодиод включен");
-                    } else {
-                        digitalWrite(PIN_LED, LOW);
-                        Serial.println("Светодиод выключен");
-                    }
-                    break;
-                default:
-                    String strout(str);
-                    Serial.println("Нет такого ключа: " + strout);
+        char str[64];
+        int amount = Serial3.readBytesUntil(';', str, 63);
+        str[amount] = '\0';
+
+        if (str[0] == '#') {  // Команда
+            GParser data(&str[1], ',');  // Пропускаем '#'
+            int datacount = data.split();
+            if (datacount >= 1) {
+                int cmd = data.getInt(0);
+                switch (cmd) {
+                    case 3:  // Управление светодиодом
+                        if (datacount >= 2) {
+                            int value = data.getInt(1);
+                            digitalWrite(PIN_LED, value ? HIGH : LOW);
+                            String msg = "@0003,LED " + String(value ? "ON" : "OFF") + ";";
+                            Serial3.print(msg);
+                            DEBUG_PRINTLN("Sent to ESP: " + msg);
+                        }
+                        break;
+                    case 4:  // Запрос температуры
+                        if (datacount >= 2 && data[1] == "request_temp") {
+                            int temp = analogRead(A2) / 4;
+                            String msg = "#0005," + String(temp) + ";";
+                            Serial3.print(msg);
+                            DEBUG_PRINTLN("Sent to ESP: " + msg);
+                        }
+                        break;
+                    default:
+                        String msg = "@9999,Unknown command: " + String(cmd) + ";";
+                        Serial3.print(msg);
+                        DEBUG_PRINTLN("Sent to ESP: " + msg);
+                        break;
+                }
+            }
+        } else if (str[0] == '@') {  // Отладка от ESP
+            String msg = String(&str[1]);
+            int cmd = msg.substring(0, 4).toInt();
+            String content = msg.substring(5);
+            if (cmd == 9998) {
+                DEBUG_PRINTLN("[ESP Debug] " + content);
+            } else {
+                DEBUG_PRINTLN("[ESP] " + msg);
             }
         }
     }
