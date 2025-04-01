@@ -64,6 +64,7 @@ void setup() {
     DEBUG_PRINTLN("Requested temperature from Mega");
 }
 
+
 void loop() {
     sett.tick();
     handleSerial();
